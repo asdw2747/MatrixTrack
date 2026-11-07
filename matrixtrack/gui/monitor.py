@@ -25,12 +25,13 @@ def drain_latest(q):
 class QueueMonitor:
     """Polls a thread-safe queue on the Tkinter main thread via after()."""
 
-    def __init__(self, canvas, q, interval_ms=30):
+    def __init__(self, canvas, q, interval_ms=30, error_callback=None):
         self.canvas = canvas
         self.queue = q
         self.interval_ms = interval_ms
         self._running = False
         self._after_id = None
+        self.error_callback = error_callback
 
     def start(self):
         if self._running:
@@ -43,6 +44,9 @@ class QueueMonitor:
             return
         latest = drain_latest(self.queue)
         if latest is not None:
+            error_message = None
+            if isinstance(latest, dict):
+                error_message = latest.get("error") or latest.get("_error")
             try:
                 if hasattr(self.canvas, "update_from_payload"):
                     self.canvas.update_from_payload(latest)
@@ -50,6 +54,18 @@ class QueueMonitor:
                     self.canvas.update_levels(latest)
             except Exception:
                 pass
+            if error_message:
+                self.stop()
+                if callable(self.error_callback):
+                    try:
+                        self.error_callback(str(error_message))
+                    except Exception:
+                        pass
+                elif hasattr(self.canvas, "handle_error"):
+                    try:
+                        self.canvas.handle_error(str(error_message))
+                    except Exception:
+                        pass
         if self._running:
             self._after_id = self.canvas.after(self.interval_ms, self._poll)
 
@@ -104,8 +120,24 @@ class AudioWorker:
         analyzer = self.analyzer
         try:
             while self._running and reader is not None:
-                frame = reader.read_block()
+                frame = reader.read_block(self.block_size)
                 if frame is None:
+                    if getattr(reader, "last_error", ""):
+                        error_payload = {
+                            "error": reader.last_error,
+                            "_error": reader.last_error,
+                        }
+                        try:
+                            self.queue.put_nowait(error_payload)
+                        except queue.Full:
+                            try:
+                                self.queue.get_nowait()
+                            except queue.Empty:
+                                pass
+                            try:
+                                self.queue.put_nowait(error_payload)
+                            except queue.Full:
+                                pass
                     break
                 if analyzer is not None and reader.channels:
                     analyzer.channels = reader.channels

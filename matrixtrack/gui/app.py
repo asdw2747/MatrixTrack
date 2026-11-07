@@ -3,7 +3,8 @@
 import os
 import queue
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
+from tkinter import ttk
 
 from matrixtrack import __version__
 
@@ -75,6 +76,29 @@ class MatrixTrackApp:
         self.canvas = LayoutMap(canvas_frame, width=720, height=500)
         self.canvas.pack(expand=True)
 
+        # ---- Live parameter control strip ----
+        control_strip = tk.Frame(root, bg="#11151c", padx=10, pady=6)
+        control_strip.pack(fill="x", side="bottom")
+
+        tk.Label(control_strip, text="Ballistics Decay", bg="#11151c", fg="#9aa7bf").pack(side="left")
+        self.ballistics_var = tk.DoubleVar(value=0.2)
+        self.ballistics_scale = tk.Scale(
+            control_strip, from_=0.05, to=0.4, resolution=0.01, orient="horizontal",
+            variable=self.ballistics_var, command=self.set_ballistics,
+            bg="#11151c", fg="#e6edf7", troughcolor="#1f2633", highlightthickness=0,
+            length=180,
+        )
+        self.ballistics_scale.pack(side="left", padx=(4, 16))
+
+        tk.Label(control_strip, text="Block Size", bg="#11151c", fg="#9aa7bf").pack(side="left")
+        self.block_size_var = tk.StringVar(value="1024")
+        self.block_size_combo = ttk.Combobox(
+            control_strip, textvariable=self.block_size_var, values=["512", "1024", "2048"],
+            state="readonly", width=8,
+        )
+        self.block_size_combo.pack(side="left", padx=(4, 0))
+        self.block_size_combo.bind("<<ComboboxSelected>>", self.change_block_size)
+
         # ---- Footer status bar ----
         footer = tk.Frame(root, bg="#11151c", padx=10, pady=6)
         footer.pack(fill="x", side="bottom")
@@ -85,7 +109,7 @@ class MatrixTrackApp:
 
         # ---- Queue + monitor + worker ----
         self.queue = queue.Queue(maxsize=4)
-        self.poller = QueueMonitor(self.canvas, self.queue, 30)
+        self.poller = QueueMonitor(self.canvas, self.queue, 30, error_callback=self.handle_audio_error)
         self.worker = None
 
         root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -114,8 +138,12 @@ class MatrixTrackApp:
         path = self.file_path_var.get()
         if path == "No file selected":
             path = None
+        try:
+            block_size = int(self.block_size_var.get())
+        except (TypeError, ValueError):
+            block_size = 1024
         self.worker = AudioWorker(
-            self.queue, path=path, block_size=1024, mode=self.monitor_mode_var.get(),
+            self.queue, path=path, block_size=block_size, mode=self.monitor_mode_var.get(),
         )
         self.worker.start()
         self.poller.start()
@@ -136,6 +164,49 @@ class MatrixTrackApp:
         self.stop_btn.config(state="disabled")
         self.monitor_state_var.set("Idle")
         self.status_var.set("Status: Stopped")
+
+    def set_ballistics(self, value):
+        try:
+            self.canvas.set_ballistics(float(value))
+        except Exception:
+            pass
+
+    def change_block_size(self, event=None):
+        try:
+            new_size = int(self.block_size_var.get())
+        except (TypeError, ValueError):
+            return
+        if self.worker is not None and self.worker.running:
+            path = self.file_path_var.get()
+            if path == "No file selected":
+                path = None
+            self.worker.stop()
+            self.worker = AudioWorker(
+                self.queue, path=path, block_size=new_size, mode=self.monitor_mode_var.get(),
+            )
+            self.worker.start()
+        elif self.worker is not None:
+            self.worker.block_size = new_size
+
+    def handle_audio_error(self, message):
+        try:
+            if self.worker is not None:
+                self.worker.stop()
+                self.worker = None
+        except Exception:
+            pass
+        try:
+            self.poller.stop()
+        except Exception:
+            pass
+        self.play_btn.config(state="normal")
+        self.stop_btn.config(state="disabled")
+        self.monitor_state_var.set("Error")
+        self.status_var.set(f"Status: Error - {message}")
+        try:
+            messagebox.showerror("MatrixTrack Audio Error", message)
+        except Exception:
+            pass
 
     def toggle_monitor_mode(self):
         if self.monitor_mode_var.get() == "Surround":

@@ -8,6 +8,33 @@ import math
 
 CHANNEL_LABELS = ["FL", "C", "FR", "Height L", "Height R", "LFE 1", "LFE 2", "SL", "SR"]
 
+DB_FLOOR = -100.0
+DB_SILENCE_THRESHOLD = 1e-5
+
+
+def linear_to_dbfs(value):
+    """Convert a linear amplitude to dBFS, with a silence floor."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value < 0:
+        value = abs(value)
+    if value <= DB_SILENCE_THRESHOLD:
+        return DB_FLOOR
+    try:
+        db = 20.0 * math.log10(value)
+    except (ValueError, OverflowError):
+        return DB_FLOOR
+    if db < DB_FLOOR:
+        db = DB_FLOOR
+    return float(db)
+
+
+# Aliases for callers/tests.
+to_dbfs = linear_to_dbfs
+dbfs = linear_to_dbfs
+
 # Microsoft WAV channel mapping (index -> speaker label).
 WAV_CHANNEL_MAP = {
     0: "FL",
@@ -53,7 +80,11 @@ class Analyzer:
             ch = 1
 
         # Initialize every canvas node to a resting state.
-        result = {label: {"peak": 0.0, "rms": 0.0} for label in self.labels}
+        result = {
+            label: {"peak": 0.0, "rms": 0.0, "peak_db": DB_FLOOR,
+                    "rms_db": DB_FLOOR, "clipping": False}
+            for label in self.labels
+        }
 
         if not frame:
             return result
@@ -64,11 +95,14 @@ class Analyzer:
                 continue
             peak = 0.0
             sq_sum = 0.0
+            clipping = False
             for x in samples:
                 try:
                     v = float(x)
                 except (TypeError, ValueError):
                     v = 0.0
+                if v >= 1.0 or v <= -1.0:
+                    clipping = True
                 av = abs(v)
                 if av > peak:
                     peak = av
@@ -79,7 +113,13 @@ class Analyzer:
 
             label = WAV_CHANNEL_MAP.get(idx)
             if label is not None and label in result:
-                result[label] = {"peak": peak, "rms": rms}
+                result[label] = {
+                    "peak": peak,
+                    "rms": rms,
+                    "peak_db": linear_to_dbfs(peak),
+                    "rms_db": linear_to_dbfs(rms),
+                    "clipping": bool(clipping),
+                }
 
         return result
 

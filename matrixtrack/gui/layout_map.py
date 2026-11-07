@@ -1,5 +1,8 @@
 """Speaker coordinate rendering system for the acoustic space canvas."""
 
+import time
+from matrixtrack.matrix.analyzer import linear_to_dbfs
+from matrixtrack.matrix.analyzer import linear_to_dbfs
 import tkinter as tk
 
 
@@ -14,6 +17,10 @@ class LayoutMap(tk.Canvas):
         self.map_width = width
         self.map_height = height
         self.nodes = {}
+        self.ballistics_alpha = 0.2
+        self.meter_levels = {}
+        self.peak_hold = {}
+        self.clip_hold_until = {}
         self._build()
 
     # ------------------------------------------------------------------ #
@@ -127,10 +134,31 @@ class LayoutMap(tk.Canvas):
             rings.append(ring)
         text = self.create_text(x, y + 32, text=label, fill="#c9d1e0",
                                 font=("Segoe UI", 9, "bold"))
+
+        # Vertical dBFS meter adjacent to the speaker node.
+        mx = x + 44
+        my_top = y - 22
+        my_bottom = y + 22
+        meter_bg = self.create_rectangle(mx, my_top, mx + 8, my_bottom,
+                                         fill="#11141a", outline="#3a4252", width=1)
+        meter_fill = self.create_rectangle(mx, my_bottom, mx + 8, my_bottom,
+                                           fill="#2d6a4f", outline="")
+        meter_tick = self.create_line(mx - 2, my_bottom, mx + 10, my_bottom,
+                                     fill="#ffffff", width=2)
+        self.create_text(mx + 4, my_top - 8, text="0", fill="#5a6478", font=("Segoe UI", 7))
+        self.create_text(mx + 4, my_bottom + 8, text="-60", fill="#5a6478", font=("Segoe UI", 7))
+
         self.nodes[label] = {
             "x": x, "y": y, "base": base, "energy": energy,
             "rings": rings, "label": text,
+            "meter": {
+                "x": mx, "top": my_top, "bottom": my_bottom,
+                "bg": meter_bg, "fill": meter_fill, "tick": meter_tick,
+            },
         }
+        self.meter_levels[label] = -100.0
+        self.peak_hold[label] = -100.0
+        self.clip_hold_until[label] = 0.0
 
     # ------------------------------------------------------------------ #
     # Visuals
@@ -155,8 +183,33 @@ class LayoutMap(tk.Canvas):
             b = int(60 + (60 - 60) * t)
         return f"#{r:02x}{g:02x}{b:02x}"
 
+    def _db_to_y(self, db, top, bottom):
+        db = max(-60.0, min(0.0, float(db)))
+        frac = (db + 60.0) / 60.0
+        return bottom - frac * (bottom - top)
+
+    def set_ballistics(self, alpha):
+        try:
+            alpha = float(alpha)
+        except (TypeError, ValueError):
+            alpha = 0.2
+        self.ballistics_alpha = max(0.05, min(0.4, alpha))
+
+    def _db_to_y(self, db, top, bottom):
+        db = max(-60.0, min(0.0, float(db)))
+        frac = (db + 60.0) / 60.0
+        return bottom - frac * (bottom - top)
+
+    def set_ballistics(self, alpha):
+        try:
+            alpha = float(alpha)
+        except (TypeError, ValueError):
+            alpha = 0.2
+        self.ballistics_alpha = max(0.05, min(0.4, alpha))
+
     def update_levels(self, levels):
         """Apply a {label: metrics} mapping to the canvas meters."""
+        now = time.time()
         for label, metrics in (levels or {}).items():
             node = self.nodes.get(label)
             if not node:
@@ -170,11 +223,23 @@ class LayoutMap(tk.Canvas):
                     rms = float(metrics.get("rms", 0.0))
                 except (TypeError, ValueError):
                     rms = 0.0
+                try:
+                    peak_db = float(metrics.get("peak_db", linear_to_dbfs(peak)))
+                except (TypeError, ValueError):
+                    peak_db = linear_to_dbfs(peak)
+                try:
+                    rms_db = float(metrics.get("rms_db", linear_to_dbfs(rms)))
+                except (TypeError, ValueError):
+                    rms_db = linear_to_dbfs(rms)
+                clipping = bool(metrics.get("clipping", False))
             else:
                 try:
                     peak = rms = float(metrics)
                 except (TypeError, ValueError):
                     peak = rms = 0.0
+                peak_db = linear_to_dbfs(peak)
+                rms_db = linear_to_dbfs(rms)
+                clipping = False
             peak = max(0.0, min(1.0, peak))
             rms = max(0.0, min(1.0, rms))
 
@@ -193,6 +258,46 @@ class LayoutMap(tk.Canvas):
                     self.itemconfig(ring, outline=color, width=1 + int(peak * 2))
                 else:
                     self.itemconfig(ring, outline="#1a1f28", width=1)
+
+            # Clipping alarm hold.
+            if clipping:
+                self.clip_hold_until[label] = now + 0.2
+            if now < self.clip_hold_until.get(label, 0.0):
+                self.itemconfig(node["base"], fill="#8b0000", outline="#ff0000", width=3)
+            else:
+                self.itemconfig(node["base"], fill="#161a22", outline="#3a4252", width=2)
+
+            # Ballistics smoothing for the dBFS bar.
+            prev_level = self.meter_levels.get(label, -100.0)
+            alpha = self.ballistics_alpha
+            smoothed = prev_level + alpha * (rms_db - prev_level)
+            self.meter_levels[label] = smoothed
+
+            # Peak hold with slow decay.
+            prev_peak = self.peak_hold.get(label, -100.0)
+            if peak_db > prev_peak:
+                prev_peak = peak_db
+            else:
+                prev_peak = max(-100.0, prev_peak - 0.5)
+            self.peak_hold[label] = prev_peak
+
+            meter = node.get("meter", {})
+            if meter:
+                mx = meter["x"]
+                top = meter["top"]
+                bottom = meter["bottom"]
+                fill_id = meter["fill"]
+                tick_id = meter["tick"]
+                y_level = self._db_to_y(smoothed, top, bottom)
+                self.coords(fill_id, mx, y_level, mx + 8, bottom)
+                fill_color = "#2d6a4f"
+                if smoothed > -2.0:
+                    fill_color = "#a61b1b"
+                elif smoothed > -18.0:
+                    fill_color = "#b8860b"
+                self.itemconfig(fill_id, fill=fill_color)
+                ty = self._db_to_y(prev_peak, top, bottom)
+                self.coords(tick_id, mx - 2, ty, mx + 10, ty)
 
     @staticmethod
     def _extract_phase(payload):

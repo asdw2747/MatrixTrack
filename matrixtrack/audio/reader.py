@@ -62,6 +62,7 @@ class AudioReader:
         self._closed = False
         self._eof = False
         self._is_flac = bool(path is not None and str(path).lower().endswith(".flac"))
+        self.last_error = ""
 
         # Header parameters (populated on open).
         self.channels = 0
@@ -80,6 +81,7 @@ class AudioReader:
             self.path = path
         self._closed = False
         self._eof = False
+        self.last_error = ""
 
         # Tear down any existing handles.
         if self._wav is not None:
@@ -106,8 +108,9 @@ class AudioReader:
                 import soundfile as sf
 
                 self._sf = sf.SoundFile(self.path)
-            except Exception:
+            except Exception as exc:
                 self._sf = None
+                self.last_error = f"Failed to open FLAC file: {exc}"
                 return self
             self.channels = int(self._sf.channels)
             self.framerate = int(self._sf.samplerate)
@@ -121,8 +124,9 @@ class AudioReader:
         self._is_flac = False
         try:
             self._wav = wave.open(self.path, "rb")
-        except Exception:
+        except Exception as exc:
             self._wav = None
+            self.last_error = f"Failed to open WAV file: {exc}"
             return self
         self._wave = self._wav
         self.channels = self._wav.getnchannels()
@@ -185,11 +189,13 @@ class AudioReader:
                 return None
             try:
                 data = self._sf.read(frames=bs, dtype="float32")
-            except Exception:
+            except Exception as exc:
+                self.last_error = f"FLAC read error: {exc}"
                 return None
             if data is None:
                 self._eof = True
                 return None
+            self.last_error = ""
             try:
                 values = data.flatten().tolist()
             except Exception:
@@ -208,11 +214,13 @@ class AudioReader:
             return None
         try:
             raw = self._wav.readframes(bs)
-        except Exception:
+        except Exception as exc:
+            self.last_error = f"WAV read error: {exc}"
             return None
         if not raw:
             self._eof = True
             return None
+        self.last_error = ""
 
         if self.sampwidth == 2:
             values = parse_pcm16(raw)

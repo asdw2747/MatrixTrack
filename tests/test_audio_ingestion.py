@@ -7,7 +7,7 @@ import unittest
 import wave
 
 from matrixtrack.audio.reader import AudioReader, parse_pcm16, parse_pcm24
-from matrixtrack.matrix.analyzer import Analyzer, CHANNEL_LABELS
+from matrixtrack.matrix.analyzer import Analyzer, CHANNEL_LABELS, linear_to_dbfs
 
 
 def _pack24(value):
@@ -42,6 +42,25 @@ class TestPCM16(unittest.TestCase):
             self.assertAlmostEqual(block[1], -32768 / 32768.0, places=5)
             self.assertEqual(reader.channels, 2)
             self.assertEqual(reader.sampwidth, 2)
+            reader.close()
+        finally:
+            os.remove(path)
+
+    def test_dynamic_block_size(self):
+        fd, path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        try:
+            with wave.open(path, "wb") as w:
+                w.setnchannels(2)
+                w.setsampwidth(2)
+                w.setframerate(44100)
+                w.writeframes(struct.pack("<20h", *([1, 2] * 10)))
+            reader = AudioReader(path, block_size=1024)
+            block = reader.read_block(4)
+            self.assertEqual(len(block), 8)
+            block2 = reader.read_block(1000)
+            self.assertEqual(len(block2), 12)
+            self.assertIsNone(reader.read_block(1000))  # EOF
             reader.close()
         finally:
             os.remove(path)
@@ -137,6 +156,22 @@ class TestEOFSafety(unittest.TestCase):
             os.remove(path)
 
 
+class TestLinearToDbfs(unittest.TestCase):
+    def test_silence_floor(self):
+        self.assertEqual(linear_to_dbfs(0.0), -100.0)
+        self.assertEqual(linear_to_dbfs(1e-6), -100.0)
+        self.assertEqual(linear_to_dbfs(1e-5), -100.0)
+
+    def test_unity_is_zero_db(self):
+        self.assertEqual(linear_to_dbfs(1.0), 0.0)
+
+    def test_half_scale(self):
+        self.assertAlmostEqual(linear_to_dbfs(0.5), -6.020599913, places=4)
+
+    def test_negative_input_uses_magnitude(self):
+        self.assertEqual(linear_to_dbfs(-1.0), 0.0)
+
+
 class TestAnalyzer(unittest.TestCase):
     def test_deinterleaves_and_metrics(self):
         frame = [0.5, -0.25, 0.0, 0.0, 0.0, 0.0] * 10
@@ -159,6 +194,13 @@ class TestAnalyzer(unittest.TestCase):
         for label in CHANNEL_LABELS:
             self.assertEqual(metrics[label]["peak"], 0.0)
             self.assertEqual(metrics[label]["rms"], 0.0)
+
+    def test_clipping_flag(self):
+        frame = [1.0, -1.0, 0.25, 0.0, 0.0, 0.0] * 4
+        metrics = Analyzer().analyze(frame, channels=6)
+        self.assertTrue(metrics["FL"]["clipping"])
+        self.assertTrue(metrics["FR"]["clipping"])
+        self.assertFalse(metrics["C"]["clipping"])
 
     def test_stereo_maps_fl_fr(self):
         frame = [0.8, 0.3] * 5

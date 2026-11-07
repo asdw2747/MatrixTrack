@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matrixtrack"
+version = "1.0.0"
+description = "A lightweight desktop utility to visually audit multi-channel audio channel maps and prevent spatial bleed."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Prisma Chill" }
+]
+dependencies = [
+    "soundfile>=0.12.1"
+]
+
+[project.scripts]
+matrixtrack = "matrixtrack.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["matrixtrack*"]

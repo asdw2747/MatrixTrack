@@ -1,0 +1,34 @@
+name: MatrixTrack CI Verification Suite
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate-and-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.11", "3.12"]
+
+    steps:
+    - name: Check out repository source
+      uses: actions/checkout@v4
+
+    - name: Set up Python Environment
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Verify Environment Footprint
+      run: |
+        python -c "import tkinter"
+        python -m pip install --upgrade pip
+
+    - name: Execute 30-Point Headless Test Suite
+      run: |
+        python -m unittest discover -v -s tests
